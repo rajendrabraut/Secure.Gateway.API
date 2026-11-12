@@ -9,6 +9,14 @@ updates:
         patterns: ["OpenTelemetry*"]
       serilog:
         patterns: ["Serilog*"]
+      aspnetcore:
+        patterns: ["Microsoft.AspNetCore.*", "Microsoft.Extensions.*"]
+    ignore:
+      # Stay on the .NET 10 LTS line; 11.x packages target net11.0 (STS).
+      - dependency-name: "Microsoft.AspNetCore.*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Microsoft.Extensions.*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
@@ -17,3 +25,9 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    ignore:
+      # Keep sdk/aspnet images on the 10.0 LTS tag; patch updates still flow.
+      - dependency-name: "dotnet/sdk"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "dotnet/aspnet"
+        update-types: ["version-update:semver-major"]

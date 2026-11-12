@@ -1,0 +1,31 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+.vs/
+.vscode/
+.idea/
+*.swp
+TestResults/
+coverage/
+*.coverage
+*.trx
+
+## Logs
+logs/
+*.log
+
+## Secrets / local config
+appsettings.Local.json
+appsettings.*.Local.json
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+
+## OS
+Thumbs.db
+.DS_Store

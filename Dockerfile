@@ -8,7 +8,7 @@ RUN dotnet restore src/Secure.Gateway.API/Secure.Gateway.API.csproj
 COPY src/ src/
 ARG BUILD_CONFIGURATION=Release
 ARG VERSION=0.0.0
-RUN dotnet publish src/Secure.Gateway.API/Secure.Gateway.API.csproj -c ${BUILD_CONFIGURATION} -o /app --no-restore /p:UseAppHost=false /p:Version=${VERSION}
+RUN ASM="${VERSION%%-*}.0" && dotnet publish src/Secure.Gateway.API/Secure.Gateway.API.csproj -c ${BUILD_CONFIGURATION} -o /app --no-restore /p:UseAppHost=false /p:Version=${VERSION} /p:AssemblyVersion=${ASM} /p:FileVersion=${ASM}
 
 # ---- runtime: Ubuntu "chiseled" image = no shell, no package manager, non-root by default ----
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS final

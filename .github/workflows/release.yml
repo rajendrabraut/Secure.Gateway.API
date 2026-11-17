@@ -111,7 +111,8 @@ jobs:
           SC: ${{ matrix.sc }}
         run: |
           set -euo pipefail
-          args=(-c "$CONFIG" -o out "-p:Version=$VERSION" "-p:SourceRevisionId=$GITHUB_SHA")
+          asm="${VERSION%%-*}.0"   # 1.0.0 -> 1.0.0.0 (assembly/file version)
+          args=(-c "$CONFIG" -o out "-p:Version=$VERSION" "-p:AssemblyVersion=$asm" "-p:FileVersion=$asm" "-p:SourceRevisionId=$GITHUB_SHA")
           if [[ -n "$RID" ]]; then args+=(-r "$RID" --self-contained "$SC"); else args+=(--no-self-contained); fi
           dotnet publish src/Secure.Gateway.API/Secure.Gateway.API.csproj "${args[@]}"
           # Debug builds keep symbols; Release ships without them.

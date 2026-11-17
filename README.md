@@ -132,7 +132,17 @@ docker run -p 8080:8080 -e ReverseProxy__Clusters__backend__Destinations__primar
 | `CI` | push / PR to `main`, or **Run workflow** (pick `both`, `Debug` or `Release`) | Build + test in **Debug and Release** (`-warnaserror`), vulnerable-package check, CodeQL, Docker build |
 | `Release` | push tag `vX.Y.Z[-pre]`, or **Run workflow** | Test, package, build image, publish GitHub Release |
 
-Release outputs: portable zip, self-contained `linux-x64`, `linux-arm64`, `win-x64` archives, `SHA256SUMS`, and a multi-arch
+Release outputs (every file is attached to the GitHub Release alongside the container image):
+
+| File | OS / CPU |
+|---|---|
+| `...-win-x64.zip`, `...-win-arm64.zip` | Windows Intel/AMD, ARM |
+| `...-linux-x64.tar.gz`, `...-linux-arm64.tar.gz` | Linux (glibc) Intel/AMD, ARM |
+| `...-linux-musl-x64.tar.gz` | Alpine Linux |
+| `...-osx-x64.tar.gz`, `...-osx-arm64.tar.gz` | macOS Intel, Apple Silicon (binaries are unsigned: `xattr -dr com.apple.quarantine <dir>`) |
+| `...-portable.zip` | any OS with the .NET 10 ASP.NET Core runtime (`dotnet Secure.Gateway.API.dll`) |
+
+Self-contained archives need no .NET install and contain a `Secure.Gateway.API` executable. Plus `SHA256SUMS` and a multi-arch
 (amd64/arm64) image at `ghcr.io/<owner>/<repo>:<version>` (`latest` for non-prerelease).
 
 ```bash

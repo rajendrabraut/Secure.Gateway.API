@@ -96,7 +96,11 @@ jobs:
           - { target: portable,  rid: "",          sc: false, ext: zip }
           - { target: linux-x64, rid: linux-x64,   sc: true,  ext: tar.gz }
           - { target: linux-arm64, rid: linux-arm64, sc: true, ext: tar.gz }
+          - { target: linux-musl-x64, rid: linux-musl-x64, sc: true, ext: tar.gz }
           - { target: win-x64,   rid: win-x64,     sc: true,  ext: zip }
+          - { target: win-arm64, rid: win-arm64,   sc: true,  ext: zip }
+          - { target: osx-x64,   rid: osx-x64,     sc: true,  ext: tar.gz }
+          - { target: osx-arm64, rid: osx-arm64,   sc: true,  ext: tar.gz }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
@@ -203,6 +207,10 @@ jobs:
           PRE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           set -euo pipefail
-          flags=(--generate-notes --target "$GITHUB_SHA" --title "$TAG")
-          [[ "$PRE" == "true" ]] && flags+=(--prerelease)
-          gh release create "$TAG" dist/* "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            flags=(--generate-notes --target "$GITHUB_SHA" --title "$TAG")
+            [[ "$PRE" == "true" ]] && flags+=(--prerelease)
+            gh release create "$TAG" dist/* "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+          fi

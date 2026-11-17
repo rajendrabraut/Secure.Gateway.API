@@ -152,6 +152,37 @@ Manual run (Actions → Release → Run workflow): choose `Debug` or `Release` a
 `publish_release` / `push_image`; otherwise you just get the build artifacts. Only the Release configuration can be published.
 Debug packages keep `.pdb` files and are named `...-debug-<target>`.
 
+## Deployment (SSH + Docker)
+
+`Deploy` runs after a tagged `Release` succeeds: **staging deploys automatically, production waits for approval**
+(pre-releases like `1.2.0-rc.1` go to staging only). You can also run it by hand: Actions → Deploy → Run workflow
+(`version`, `environment`; tick `dry_run` to only validate the image and see the plan).
+
+It pulls `ghcr.io/<owner>/<repo>:<version>` on your server, swaps the container, waits for `/health/ready`, and
+**rolls back to the previous container if the health check fails**. Config is never baked into the image.
+
+One-time setup, per environment (repo → Settings → Environments → `staging`, `production`):
+
+| Kind | Name | Value |
+|---|---|---|
+| secret | `DEPLOY_HOST` | server hostname or IP |
+| secret | `DEPLOY_USER` | SSH user (must be allowed to run `docker`) |
+| secret | `DEPLOY_SSH_KEY` | private key of a **dedicated** deploy key (`ssh-keygen -t ed25519`), public half in the server's `authorized_keys` |
+| secret | `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -p <port> <host>`; check the fingerprint yourself first (host key is pinned, no trust-on-first-use) |
+| secret | `GATEWAY_ENV_FILE` | optional; runtime config as `KEY=VALUE` lines, written to `~/secure-gateway/<env>.env` (mode 600) |
+| variable | `PUBLIC_URL` | optional, e.g. `https://api.example.com`; checked after deploy |
+| variable | `GATEWAY_PORT` / `DEPLOY_SSH_PORT` | optional, default `8080` / `22` |
+
+Example `GATEWAY_ENV_FILE` (no quotes, one per line):
+```
+AllowedHosts=api.example.com
+ReverseProxy__Clusters__backend__Destinations__primary__Address=http://10.0.0.5:5100/
+Authentication__Jwt__Authority=https://login.example.com/
+Authentication__Jwt__Audience=my-api
+```
+On `production`, add **Required reviewers** under the environment's protection rules; that is what gates the deploy.
+The server needs Docker and curl. Rollback only covers a failed health check; to go back later, run Deploy with an older `version`.
+
 ## Tests
 ```bash
 dotnet test

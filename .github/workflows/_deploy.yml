@@ -1,0 +1,110 @@
+name: Deploy (reusable)
+
+# Called by deploy.yml. Deploys the GHCR image to one environment over SSH + Docker.
+# Secrets/variables are read from the GitHub Environment named by `environment`.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      image_repo:
+        description: Lowercase owner/repo used for the ghcr.io image path
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.PUBLIC_URL }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      GATEWAY_ENV_FILE: ${{ secrets.GATEWAY_ENV_FILE }}
+      SSH_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+      GATEWAY_PORT: ${{ vars.GATEWAY_PORT || '8080' }}
+      PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      VERSION: ${{ inputs.version }}
+      IMAGE_REPO: ${{ inputs.image_repo }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate configuration
+        run: |
+          set -euo pipefail
+          missing=()
+          for v in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            [[ -n "${!v}" ]] || missing+=("$v")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing secrets in environment '$ENVIRONMENT': ${missing[*]}"; exit 1
+          fi
+          [[ "$ENVIRONMENT" =~ ^(staging|production)$ ]] || { echo "::error::bad environment"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::bad version"; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ && "$GATEWAY_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "::error::ports must be numeric"; exit 1; }
+          [[ "$IMAGE_REPO" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]] || { echo "::error::bad image repo"; exit 1; }
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Host key is pinned from a secret; no trust-on-first-use.
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host target
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${SSH_PORT}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ConnectTimeout 20
+            ServerAliveInterval 15
+          EOF
+
+      - name: Upload runtime config
+        if: env.GATEWAY_ENV_FILE != ''
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$GATEWAY_ENV_FILE" | ssh target \
+            "umask 077 && mkdir -p ~/secure-gateway && cat > ~/secure-gateway/${ENVIRONMENT}.env"
+
+      - name: Deploy ${{ inputs.version }} to ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          ssh target "ENVIRONMENT='$ENVIRONMENT' VERSION='$VERSION' IMAGE_REPO='$IMAGE_REPO' PORT='$GATEWAY_PORT' bash -s" \
+            < deploy/remote-deploy.sh
+
+      - name: Verify public endpoint
+        if: env.PUBLIC_URL != ''
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 6 --retry-delay 5 --retry-all-errors -m 10 -o /dev/null -w "ready: HTTP %{http_code}\n" \
+            "${PUBLIC_URL%/}/health/ready"
+
+      - name: Remove SSH material
+        if: always()
+        run: rm -rf ~/.ssh/id_deploy ~/.ssh/known_hosts ~/.ssh/config
+
+      - name: Summary
+        if: success()
+        run: echo "### Deployed ${VERSION} to ${ENVIRONMENT}" >> "$GITHUB_STEP_SUMMARY"

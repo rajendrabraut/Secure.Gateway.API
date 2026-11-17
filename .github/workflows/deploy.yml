@@ -1,0 +1,99 @@
+name: Deploy
+
+# Tag release succeeds  => staging deploys automatically, production waits for approval
+#                          (pre-releases such as 1.2.0-rc.1 go to staging only).
+# Manual run            => choose version + environment; dry_run only validates the plan.
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to deploy, without leading v (e.g. 1.0.1)
+        type: string
+        required: true
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        default: staging
+      dry_run:
+        description: Validate the version and show the plan; deploy nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      staging: ${{ steps.plan.outputs.staging }}
+      production: ${{ steps.plan.outputs.production }}
+      dry_run: ${{ steps.plan.outputs.dry_run }}
+      image_repo: ${{ steps.plan.outputs.image_repo }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_ENV: ${{ inputs.environment }}
+          IN_DRY: ${{ inputs.dry_run }}
+          RUN_REF: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            version="$IN_VERSION"; dry="$IN_DRY"
+            [[ "$IN_ENV" == "production" ]] && { stg=false; prod=true; } || { stg=true; prod=false; }
+          else
+            version="${RUN_REF#v}"; dry=false; stg=true
+            [[ "$version" == *-* ]] && prod=false || prod=true
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$version'"; exit 1
+          fi
+          repo="$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          # The image must already exist (published by the Release workflow).
+          docker buildx imagetools inspect "ghcr.io/${repo}:${version}" > /dev/null \
+            || { echo "::error::ghcr.io/${repo}:${version} not found; run the Release workflow first"; exit 1; }
+          {
+            echo "version=$version"; echo "staging=$stg"; echo "production=$prod"
+            echo "dry_run=$dry"; echo "image_repo=$repo"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Deploy plan"
+            echo "- image: \`ghcr.io/${repo}:${version}\`"
+            echo "- staging: $stg, production: $prod (needs approval), dry run: $dry"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  staging:
+    needs: resolve
+    if: needs.resolve.outputs.staging == 'true' && needs.resolve.outputs.dry_run != 'true'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: staging
+      version: ${{ needs.resolve.outputs.version }}
+      image_repo: ${{ needs.resolve.outputs.image_repo }}
+    secrets: inherit
+
+  production:
+    needs: [resolve, staging]
+    if: >-
+      !cancelled() &&
+      needs.resolve.outputs.production == 'true' &&
+      needs.resolve.outputs.dry_run != 'true' &&
+      (needs.staging.result == 'success' || needs.staging.result == 'skipped')
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: production
+      version: ${{ needs.resolve.outputs.version }}
+      image_repo: ${{ needs.resolve.outputs.image_repo }}
+    secrets: inherit

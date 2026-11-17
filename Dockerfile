@@ -6,7 +6,9 @@ WORKDIR /src
 COPY src/Secure.Gateway.API/Secure.Gateway.API.csproj src/Secure.Gateway.API/
 RUN dotnet restore src/Secure.Gateway.API/Secure.Gateway.API.csproj
 COPY src/ src/
-RUN dotnet publish src/Secure.Gateway.API/Secure.Gateway.API.csproj -c Release -o /app --no-restore /p:UseAppHost=false
+ARG BUILD_CONFIGURATION=Release
+ARG VERSION=0.0.0
+RUN dotnet publish src/Secure.Gateway.API/Secure.Gateway.API.csproj -c ${BUILD_CONFIGURATION} -o /app --no-restore /p:UseAppHost=false /p:Version=${VERSION}
 
 # ---- runtime: Ubuntu "chiseled" image = no shell, no package manager, non-root by default ----
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS final

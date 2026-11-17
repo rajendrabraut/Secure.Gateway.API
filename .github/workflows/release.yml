@@ -1,0 +1,207 @@
+name: Release
+
+# Tag push (v1.2.3) => Release build, GitHub Release, GHCR image.
+# Manual run => pick Debug or Release; nothing is published unless you tick the boxes.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Build configuration
+        type: choice
+        options: [Release, Debug]
+        default: Release
+      version:
+        description: Version, without leading v (e.g. 1.2.3 or 1.2.3-rc.1)
+        type: string
+        default: 0.0.0-dev
+      publish_release:
+        description: Create the GitHub Release (Release configuration only)
+        type: boolean
+        default: false
+      push_image:
+        description: Push the container image to GHCR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      configuration: ${{ steps.meta.outputs.configuration }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      publish_release: ${{ steps.meta.outputs.publish_release }}
+      push_image: ${{ steps.meta.outputs.push_image }}
+    steps:
+      - id: meta
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_CONFIG: ${{ inputs.configuration }}
+          IN_RELEASE: ${{ inputs.publish_release }}
+          IN_IMAGE: ${{ inputs.push_image }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"; config=Release; release=true; image=true
+          else
+            version="${IN_VERSION:-0.0.0-dev}"; config="${IN_CONFIG:-Release}"
+            release="${IN_RELEASE:-false}"; image="${IN_IMAGE:-false}"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$version' (expected 1.2.3 or 1.2.3-rc.1)"; exit 1
+          fi
+          if [[ "$config" != "Release" && ( "$release" == "true" || "$image" == "true" ) ]]; then
+            echo "::error::Only the Release configuration can be published."; exit 1
+          fi
+          [[ "$version" == *-* ]] && pre=true || pre=false
+          {
+            echo "version=$version"; echo "configuration=$config"; echo "prerelease=$pre"
+            echo "publish_release=$release"; echo "push_image=$image"
+          } >> "$GITHUB_OUTPUT"
+          echo "### $config build of $version (release=$release, image=$image)" >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c ${{ needs.prepare.outputs.configuration }} -warnaserror
+      - run: dotnet test --no-build -c ${{ needs.prepare.outputs.configuration }}
+
+  package:
+    name: package (${{ matrix.target }})
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: portable,  rid: "",          sc: false, ext: zip }
+          - { target: linux-x64, rid: linux-x64,   sc: true,  ext: tar.gz }
+          - { target: linux-arm64, rid: linux-arm64, sc: true, ext: tar.gz }
+          - { target: win-x64,   rid: win-x64,     sc: true,  ext: zip }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CONFIG: ${{ needs.prepare.outputs.configuration }}
+          RID: ${{ matrix.rid }}
+          SC: ${{ matrix.sc }}
+        run: |
+          set -euo pipefail
+          args=(-c "$CONFIG" -o out "-p:Version=$VERSION" "-p:SourceRevisionId=$GITHUB_SHA")
+          if [[ -n "$RID" ]]; then args+=(-r "$RID" --self-contained "$SC"); else args+=(--no-self-contained); fi
+          dotnet publish src/Secure.Gateway.API/Secure.Gateway.API.csproj "${args[@]}"
+          # Debug builds keep symbols; Release ships without them.
+          [[ "$CONFIG" == "Release" ]] && find out -name '*.pdb' -delete || true
+
+      - name: Archive
+        env:
+          NAME: secure-gateway-api-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.configuration == 'Debug' && 'debug-' || '' }}${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [[ "${{ matrix.ext }}" == "zip" ]]; then (cd out && zip -qr "../dist/$NAME.zip" .)
+          else tar -C out -czf "dist/$NAME.tar.gz" .; fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  image:
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: needs.prepare.outputs.push_image == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.prerelease == 'false' && needs.prepare.outputs.push_image == 'true' }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ needs.prepare.outputs.push_image == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ needs.prepare.outputs.push_image == 'true' }}
+          load: ${{ needs.prepare.outputs.push_image != 'true' }}
+          build-args: |
+            BUILD_CONFIGURATION=${{ needs.prepare.outputs.configuration }}
+            VERSION=${{ needs.prepare.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: [prepare, package, image]
+    if: needs.prepare.outputs.publish_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.prepare.outputs.version }}
+          PRE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=(--generate-notes --target "$GITHUB_SHA" --title "$TAG")
+          [[ "$PRE" == "true" ]] && flags+=(--prerelease)
+          gh release create "$TAG" dist/* "${flags[@]}" --repo "$GITHUB_REPOSITORY"

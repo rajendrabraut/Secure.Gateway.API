@@ -125,6 +125,23 @@ docker run -p 8080:8080 -e ReverseProxy__Clusters__backend__Destinations__primar
 - [ ] Multi-instance? add a distributed limiter (Redis) or LB-level rate limit — built-in limits are per instance
 - [ ] Tune WAF false positives with `Gateway:Waf:DisabledRules` / `ExcludedPaths`, start with `Mode: Detect` on new routes
 
+## CI / Release (GitHub Actions)
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `CI` | push / PR to `main`, or **Run workflow** (pick `both`, `Debug` or `Release`) | Build + test in **Debug and Release** (`-warnaserror`), vulnerable-package check, CodeQL, Docker build |
+| `Release` | push tag `vX.Y.Z[-pre]`, or **Run workflow** | Test, package, build image, publish GitHub Release |
+
+Release outputs: portable zip, self-contained `linux-x64`, `linux-arm64`, `win-x64` archives, `SHA256SUMS`, and a multi-arch
+(amd64/arm64) image at `ghcr.io/<owner>/<repo>:<version>` (`latest` for non-prerelease).
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0      # full release
+```
+Manual run (Actions → Release → Run workflow): choose `Debug` or `Release` and a version. Nothing is published unless you tick
+`publish_release` / `push_image`; otherwise you just get the build artifacts. Only the Release configuration can be published.
+Debug packages keep `.pdb` files and are named `...-debug-<target>`.
+
 ## Tests
 ```bash
 dotnet test

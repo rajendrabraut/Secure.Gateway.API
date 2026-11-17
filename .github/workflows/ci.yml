@@ -5,13 +5,29 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Build configuration to run
+        type: choice
+        options: [both, Debug, Release]
+        default: both
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
+    name: build-test (${{ matrix.configuration }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: ${{ fromJSON(inputs.configuration == 'Debug' && '["Debug"]' || inputs.configuration == 'Release' && '["Release"]' || '["Debug","Release"]') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -23,12 +39,22 @@ jobs:
         run: dotnet restore
 
       - name: Build
-        run: dotnet build --no-restore -c Release -warnaserror
+        run: dotnet build --no-restore -c ${{ matrix.configuration }} -warnaserror
 
       - name: Test
-        run: dotnet test --no-build -c Release --logger "trx" --collect:"XPlat Code Coverage"
+        run: dotnet test --no-build -c ${{ matrix.configuration }} --logger "trx" --collect:"XPlat Code Coverage" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.configuration }}
+          path: TestResults
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Vulnerable package check
+        if: matrix.configuration == 'Release'
         run: |
           dotnet list package --vulnerable --include-transitive 2>&1 | tee vuln.txt
           if grep -q "has the following vulnerable packages" vuln.txt; then exit 1; fi
@@ -55,5 +81,5 @@ jobs:
     needs: build-test
     steps:
       - uses: actions/checkout@v7
-      - name: Build image
-        run: docker build -t secure-gateway-api:ci .
+      - name: Build image (Release)
+        run: docker build --build-arg BUILD_CONFIGURATION=Release -t secure-gateway-api:ci .
